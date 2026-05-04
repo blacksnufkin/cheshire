@@ -1,7 +1,4 @@
-<p align="center">
-  <img src="assets/Cheshire_logo.png" alt="Cheshire" width="320">
-</p>
-
+![Cheshire Logo](assets/Cheshire_logo.png)
 # Cheshire
 
 **Pre-flight payload QA for Adaptix, powered by LitterBox.**
