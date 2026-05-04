@@ -1,0 +1,7 @@
+extender_type: "service"
+extender_file: "service_cheshire.so"
+ax_file: "ax_config.axs"
+
+service_name: "cheshire"
+service_config: |
+  litterbox_url: "http://192.168.88.128:1337"
