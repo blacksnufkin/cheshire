@@ -35,7 +35,7 @@ var (
 func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginService {
 	Ts = ts.(Teamserver)
 	ModuleDir = moduleDir
-	LitterboxURL = "http://192.168.88.128:1337"
+	LitterboxURL = ""
 
 	for _, line := range strings.Split(serviceConfig, "\n") {
 		line = strings.TrimSpace(line)
@@ -48,11 +48,19 @@ func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginSe
 		}
 	}
 
-	fmt.Printf("[cheshire] Initialized — LitterBox at %s\n", LitterboxURL)
+	if LitterboxURL == "" {
+		fmt.Println("[cheshire] ERROR: litterbox_url is not set in service_config — Cheshire will refuse all requests until config is fixed")
+	} else {
+		fmt.Printf("[cheshire] Initialized — LitterBox at %s\n", LitterboxURL)
+	}
 	return &PluginService{}
 }
 
 func (p *PluginService) Call(operator string, function string, args string) {
+	if LitterboxURL == "" {
+		sendError(operator, "Cheshire is not configured: set litterbox_url in service_config (config.yaml)")
+		return
+	}
 	switch function {
 	case "get_health", "get_profiles":
 		// `get_health` is the new unified probe. `get_profiles` kept as an

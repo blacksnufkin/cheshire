@@ -118,7 +118,7 @@ function fmtJSON(o) { try { return JSON.stringify(o, null, 2); } catch(e) { retu
 // items: [{label, value, severity}] where severity is "clean" | "critical" | "medium" | "info"
 function renderStatStrip(label, items) {
     if (!label) return;
-    let html = "<table cellspacing='6' cellpadding='6' style='margin:4px 0;'><tr>";
+    let html = "<table cellspacing='4' cellpadding='4' style='margin:2px 0;'><tr>";
     for (let i = 0; i < items.length; i++) {
         let it = items[i];
         let val = (it.value === null || it.value === undefined) ? "0" : String(it.value);
@@ -132,9 +132,9 @@ function renderStatStrip(label, items) {
         else                         valColor = "#D0D0D0";
 
         let bdr = isHit ? COL_CRITICAL : "#444";
-        html += "<td style='border:1px solid " + bdr + ";padding:8px 14px;'>" +
-                "<div style='color:#888;font-size:9pt;'>" + it.label + "</div>" +
-                "<div style='color:" + valColor + ";font-size:16pt;font-weight:bold;'>" + val + "</div>" +
+        html += "<td style='border:1px solid " + bdr + ";padding:5px 10px;'>" +
+                "<div style='color:#888;font-size:8pt;'>" + it.label + "</div>" +
+                "<div style='color:" + valColor + ";font-size:11pt;font-weight:bold;'>" + val + "</div>" +
                 "</td>";
     }
     html += "</tr></table>";
@@ -236,8 +236,6 @@ function showCheshireDialog() {
     });
 
     let bl = form.create_hlayout();
-    bl.addWidget(W.status);
-    bl.addWidget(form.create_hspacer());
     bl.addWidget(W.runAll);
     bl.addWidget(form.create_label("<span style='color:#444'>|</span>"));
     bl.addWidget(W.runStatic);
@@ -245,19 +243,27 @@ function showCheshireDialog() {
     bl.addWidget(W.runEdr);
     bl.addWidget(form.create_label("<span style='color:#444'>|</span>"));
     bl.addWidget(W.cleanup);
+    bl.addWidget(form.create_hspacer());
+    bl.addWidget(W.status);
     let bp = form.create_panel(); bp.setLayout(bl);
 
-    // ── Verdict banner ───────────────────────────────────────────────────────
-    let verdictGroup = form.create_groupbox("Verdict", false);
+    // ── Verdict (compact, inline label — no group wrapper) ───────────────────
     W.verdictBanner = form.create_label(
-        "<div style='padding:8px;color:#888;'><i>Run an analysis to see the verdict.</i></div>"
+        "<span style='color:#888;'><i>Select a payload and click Run All to begin.</i></span>"
     );
-    let vl = form.create_vlayout();
-    vl.addWidget(W.verdictBanner);
-    let vp = form.create_panel(); vp.setLayout(vl);
-    verdictGroup.setPanel(vp);
 
-    // ── Detection summary ────────────────────────────────────────────────────
+    // ── Live progress (compact, no group wrapper) ────────────────────────────
+    W.progressLabel = form.create_label("<span style='color:#666;font-size:9pt;'>(no scanners running)</span>");
+    S.progress = {};
+
+    // Verdict + progress live side-by-side in one strip to save vertical space.
+    let stripLayout = form.create_hlayout();
+    stripLayout.addWidget(W.verdictBanner);
+    stripLayout.addWidget(form.create_hspacer());
+    stripLayout.addWidget(W.progressLabel);
+    let stripPanel = form.create_panel(); stripPanel.setLayout(stripLayout);
+
+    // ── Detection summary (the hero) ─────────────────────────────────────────
     let summaryGroup = form.create_groupbox("Detection Summary", false);
     W.summaryTable = form.create_table(["Severity", "Scanner", "Detection", "Detail"]);
     W.summaryTable.setSortingEnabled(true);
@@ -266,19 +272,7 @@ function showCheshireDialog() {
     let sp = form.create_panel(); sp.setLayout(sl);
     summaryGroup.setPanel(sp);
 
-    // ── Progress rows ────────────────────────────────────────────────────────
-    let progressGroup = form.create_groupbox("Live Progress", false);
-    // Single label that re-renders the full per-scanner state on each update.
-    // The state itself lives in S.progress so we can rebuild the rendered
-    // text from scratch every time without losing rows.
-    W.progressLabel = form.create_label("<i style='color:#888;padding:6px;'>No scanners running.</i>");
-    let plg = form.create_vlayout();
-    plg.addWidget(W.progressLabel);
-    let pgp = form.create_panel(); pgp.setLayout(plg);
-    progressGroup.setPanel(pgp);
-    S.progress = {};   // scanner key -> { state, message, count }
-
-    // ── Deep-dive tabs ───────────────────────────────────────────────────────
+    // ── Deep-dive tabs (the rest) ────────────────────────────────────────────
     W.topTabs = form.create_tabs();
     W.topTabs.addTab(buildStaticPanel(),  "Static");
     W.topTabs.addTab(buildDynamicPanel(), "Dynamic");
@@ -290,9 +284,8 @@ function showCheshireDialog() {
     main.addWidget(profGroup);
     main.addWidget(dynGroup);
     main.addWidget(bp);
-    main.addWidget(verdictGroup);
+    main.addWidget(stripPanel);
     main.addWidget(summaryGroup);
-    main.addWidget(progressGroup);
     main.addWidget(W.topTabs);
 
     let dialog = form.create_dialog("Cheshire — LitterBox QA");
@@ -327,16 +320,51 @@ function wrap(t) {
     return p;
 }
 
-// Build a scanner sub-tab: stat strip on top + textmulti for details.
-// Returns the widgets so renderers can populate them.
+// Build a scanner sub-tab: stat strip on top + scrollable HTML label for
+// details below. We use a label-in-scrollarea (not textmulti) because Qt's
+// QPlainTextEdit does NOT render HTML/colors/bold — labels do, and the
+// scrollarea handles overflow when content gets long.
 function buildScannerTab(placeholder) {
     let stats = form.create_label("");
-    let body  = mkText(placeholder);
-    let lay = form.create_vlayout();
-    lay.addWidget(stats);
-    lay.addWidget(body);
-    let p = form.create_panel(); p.setLayout(lay);
-    return { panel: p, stats: stats, body: body };
+    let body  = form.create_label(placeholder ?
+        "<i style='color:#666;font-size:10pt;'>" + placeholder + "</i>" : "");
+
+    let bodyInner = form.create_panel();
+    let bil = form.create_vlayout();
+    bil.addWidget(body);
+    bil.addWidget(form.create_vspacer());
+    bodyInner.setLayout(bil);
+
+    let scroll = form.create_scrollarea();
+    scroll.setPanel(bodyInner);
+    scroll.setWidgetResizable(true);
+
+    let outerLay = form.create_vlayout();
+    outerLay.addWidget(stats);
+    outerLay.addWidget(scroll);
+    let outer = form.create_panel(); outer.setLayout(outerLay);
+    return { panel: outer, stats: stats, body: body };
+}
+
+// HTML helpers
+function htmlEsc(s) {
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function tagSev(sev) {
+    let col = sevColor(sev);
+    return "<span style='color:" + col + ";font-weight:bold;font-size:9pt;'>[" + sev + "]</span>";
+}
+
+function sectionHeader(title) {
+    return "<div style='font-size:10pt;font-weight:bold;color:#E0E0E0;margin-top:10px;margin-bottom:4px;border-bottom:1px solid #444;padding-bottom:2px;'>" +
+           htmlEsc(title) + "</div>";
+}
+
+function kvRowHtml(k, v) {
+    return "<tr><td style='color:#888;padding:2px 12px 2px 0;font-size:10pt;'>" + htmlEsc(k) +
+           "</td><td style='color:#D0D0D0;font-family:monospace;font-size:10pt;'>" + htmlEsc(v) + "</td></tr>";
 }
 
 function buildStaticPanel() {
@@ -535,7 +563,6 @@ function progressIcon(state) {
 function redrawProgress() {
     if (!W.progressLabel) return;
 
-    // Stable order: static, dynamic, then EDR profiles alphabetically
     let keys = [];
     if (S.progress["static"])  keys.push("static");
     if (S.progress["dynamic"]) keys.push("dynamic");
@@ -547,27 +574,25 @@ function redrawProgress() {
     for (let i = 0; i < edr.length; i++) keys.push(edr[i]);
 
     if (keys.length === 0) {
-        W.progressLabel.setText("<i style='color:#888;padding:6px;'>No scanners running.</i>");
+        W.progressLabel.setText("<span style='color:#666;font-size:9pt;'>(no scanners running)</span>");
         return;
     }
 
-    let html = "<div style='padding:6px;line-height:1.6;'>";
+    // Single-line summary: "Static ✓  Dynamic ⏳  EDR·elastic 🔄 (3)"
+    let parts = [];
     for (let i = 0; i < keys.length; i++) {
         let k = keys[i];
         let p = S.progress[k];
-        let displayName;
-        if (k === "static")       displayName = "Static";
-        else if (k === "dynamic") displayName = "Dynamic";
-        else                      displayName = "EDR · " + k.substring(4);
-
+        let display;
+        if (k === "static")       display = "Static";
+        else if (k === "dynamic") display = "Dynamic";
+        else                      display = k.substring(4);
         let ic = progressIcon(p.state);
-        let countStr = (p.count > 0) ? "  <b style='color:" + COL_CRITICAL + "'>" + p.count + " hit(s)</b>" : "";
-        html += "<div><span style='color:" + ic[1] + ";'>" + ic[0] + "</span>  " +
-                "<b style='color:#D0D0D0;'>" + displayName + "</b>  " +
-                "<span style='color:" + ic[1] + ";'>" + (p.message || "") + "</span>" + countStr + "</div>";
+        let countStr = (p.count > 0) ? " <b style='color:" + COL_CRITICAL + "'>(" + p.count + ")</b>" : "";
+        parts.push("<span style='color:" + ic[1] + ";'>" + ic[0] + "</span> " +
+                   "<span style='color:#D0D0D0;font-size:9pt;'>" + display + "</span>" + countStr);
     }
-    html += "</div>";
-    W.progressLabel.setText(html);
+    W.progressLabel.setText(parts.join(" &nbsp; "));
 }
 
 // ── Verdict + Summary ────────────────────────────────────────────────────────
@@ -598,30 +623,27 @@ function updateVerdict() {
 
     if (parts.length === 0) {
         W.verdictBanner.setText(
-            "<div style='padding:14px;color:#888;font-size:13pt;'>" +
-            "<i>Select a payload and click <b>Run All</b> (or any individual scanner) to begin.</i></div>"
+            "<span style='color:#888;'>" +
+            "<i>Select a payload and click <b>Run All</b> to begin.</i></span>"
         );
         return;
     }
 
     if (!allScheduledDone()) {
-        // Show in-progress verdict — count the partial detections seen so far.
         let partial = collectAllDetections().filter(function(d) {
             return SEV_RANK[d.sev] >= SEV_RANK.MEDIUM;
         });
         let countText = partial.length > 0 ?
             partial.length + " hit(s) so far" : "no hits yet";
         W.verdictBanner.setText(
-            "<div style='padding:14px;'>" +
-            "<span style='font-size:20pt;color:" + COL_WARN + ";font-weight:bold;'>⏳ RUNNING</span>" +
-            " <span style='color:#D0D0D0;font-size:14pt;'>— " + countText + "</span>" +
-            " <span style='color:#888;font-size:11pt;'>(scope: " + parts.join(" + ") + ")</span>" +
-            "</div>"
+            "<span style='font-size:11pt;color:" + COL_WARN + ";font-weight:bold;'>⏳ RUNNING</span>" +
+            " <span style='color:#D0D0D0;'>— " + countText + "</span>" +
+            " <span style='color:#888;font-size:9pt;'>(" + parts.join(" + ") + ")</span>"
         );
         return;
     }
 
-    // Terminal — produce final verdict
+    // Terminal verdict
     let allDetections = collectAllDetections();
     let real = [];
     let info = [];
@@ -633,7 +655,7 @@ function updateVerdict() {
 
     let scopeNote = "";
     if (parts.length < 3) {
-        scopeNote = " <span style='color:#888;font-size:11pt;'>(" + parts.join(" + ") + " only)</span>";
+        scopeNote = " <span style='color:#888;font-size:9pt;'>(" + parts.join(" + ") + " only)</span>";
     }
 
     let html;
@@ -650,19 +672,17 @@ function updateVerdict() {
             if (SEV_RANK[real[i].sev] > SEV_RANK[maxSev]) maxSev = real[i].sev;
         }
         let col = sevColor(maxSev);
-        html = "<div style='padding:14px;'>" +
-               "<span style='font-size:24pt;color:" + col + ";font-weight:bold;'>🚫 DETECTED</span>" +
-               " <span style='color:#E0E0E0;font-size:16pt;'>— " + real.length + " hit(s) across " +
+        html = "<span style='font-size:11pt;color:" + col + ";font-weight:bold;'>🚫 DETECTED</span>" +
+               " <span style='color:#E0E0E0;'>— " + real.length + " hit(s) across " +
                famParts.join(", ") + "</span>" +
-               " <span style='color:" + col + ";font-size:13pt;font-weight:bold;'>[" + maxSev + "]</span>" +
-               scopeNote + "</div>";
+               " <span style='color:" + col + ";font-weight:bold;'>[" + maxSev + "]</span>" +
+               scopeNote;
     } else {
         let infoNote = info.length > 0 ?
-            " <span style='color:#888;font-size:11pt;'>(" + info.length + " informational signal(s))</span>" : "";
-        html = "<div style='padding:14px;'>" +
-               "<span style='font-size:24pt;color:" + COL_OK + ";font-weight:bold;'>✓ CLEAN</span>" +
-               " <span style='color:#E0E0E0;font-size:16pt;'>— 0 critical/high/medium detections</span>" +
-               infoNote + scopeNote + "</div>";
+            " <span style='color:#888;font-size:9pt;'>(" + info.length + " informational)</span>" : "";
+        html = "<span style='font-size:11pt;color:" + COL_OK + ";font-weight:bold;'>✓ CLEAN</span>" +
+               " <span style='color:#E0E0E0;'>— 0 critical/high/medium</span>" +
+               infoNote + scopeNote;
     }
     W.verdictBanner.setText(html);
 }
@@ -903,11 +923,12 @@ function renderProfiles(profilesData, agentsData) {
     }
 
     W.profileChecks = {};
-    let layout = form.create_hlayout();
+    let grid = form.create_gridlayout();
     let reachable = 0;
 
     if (profs.length === 0) {
-        W.fleetLabel.setText("<i style='color:" + COL_BAD + "'>No EDR profiles configured</i>");
+        W.fleetLabel.setText("<span style='color:" + COL_BAD + ";font-size:10pt;'><i>No EDR profiles configured</i></span>");
+        grid.addWidget(form.create_label(""), 0, 0);
     } else {
         for (let i = 0; i < profs.length; i++) {
             let p = profs[i];
@@ -921,26 +942,49 @@ function renderProfiles(profilesData, agentsData) {
             let backendOk = (kind === "elastic") ? !!el.reachable : agentOk;
             let healthy = agentOk && backendOk;
 
-            // Checkbox labels are plain text only — Qt does not render HTML
-            // inside QCheckBox::text. Build the label as plain text and
-            // surface health/hostname/cluster info there.
-            let badge = healthy ? "[OK]" : (agentOk ? "[NO BACKEND]" : "[DOWN]");
-            let suffix = "";
-            if (ag.hostname) suffix += " — " + ag.hostname;
-            if (kind === "elastic" && el.cluster_name) suffix += " / " + el.cluster_name;
+            let statusText, statusCol;
+            if (healthy) { statusText = "reachable";     statusCol = COL_OK; }
+            else         { statusText = "not reachable"; statusCol = COL_BAD; }
 
-            let label = badge + " " + display + " (" + kind + ")" + suffix;
-            let chk = form.create_check(label);
+            let chk = form.create_check(display);
             chk.setChecked(healthy);
             chk.setEnabled(healthy);
             W.profileChecks[name] = chk;
-            layout.addWidget(chk);
+
+            let statusLabel = form.create_label(
+                "<span style='color:" + statusCol + ";font-size:10pt;font-weight:bold;'>● " +
+                statusText + "</span>"
+            );
+
+            // Compact meta — kind + hostname + cluster only.
+            let metaParts = [];
+            metaParts.push("<span style='color:#888;'>" + htmlEsc(kind) + "</span>");
+            if (ag.hostname) metaParts.push("<span style='color:#A0A0A0;'>" + htmlEsc(ag.hostname) + "</span>");
+            if (kind === "elastic" && el.cluster_name) {
+                metaParts.push("<span style='color:#A0A0A0;'>" + htmlEsc(el.cluster_name) + "</span>");
+            }
+            let metaLabel = form.create_label(
+                "<span style='font-size:9pt;'>" +
+                metaParts.join(" <span style='color:#444;'>·</span> ") +
+                "</span>"
+            );
+
+            // Aligned columns:  [checkbox]  [status badge]  [meta]  [spacer]
+            grid.addWidget(chk,         i, 0);
+            grid.addWidget(statusLabel, i, 1);
+            grid.addWidget(metaLabel,   i, 2);
             if (healthy) reachable++;
         }
-        layout.addWidget(form.create_hspacer());
-        W.fleetLabel.setText("<b>" + reachable + "</b> of " + profs.length + " healthy");
+
+        let healthCol = (reachable === profs.length) ? COL_OK :
+                        (reachable > 0)              ? COL_MEDIUM : COL_BAD;
+        W.fleetLabel.setText(
+            "<span style='font-size:10pt;'>" +
+            "<b style='color:" + healthCol + ";'>" + reachable + "</b>" +
+            " <span style='color:#888;'>of " + profs.length + " profile(s) reachable</span></span>"
+        );
     }
-    W.profilesPanel.setLayout(layout);
+    W.profilesPanel.setLayout(grid);
 }
 
 function renderStatic(results) {
@@ -969,9 +1013,9 @@ function renderStaticYara(yara) {
         { label: "Max Severity",  value: isClean ? "—" : highSev,        severity: highSev > 50 ? "critical" : "info" },
     ]);
 
-    let out = "";
+    let html = "";
     if (isClean) {
-        out = "No YARA rules matched.\n";
+        html = "<div style='color:" + COL_OK + ";font-size:10pt;padding:6px;'>✓ No YARA rules matched.</div>";
     } else {
         let sorted = matches.slice().sort(function(a, b) {
             return (parseInt((b.metadata && b.metadata.severity) || 0)) -
@@ -980,26 +1024,35 @@ function renderStaticYara(yara) {
         for (let i = 0; i < sorted.length; i++) {
             let m = sorted[i];
             let meta = m.metadata || {};
-            out += "─── #" + (i+1) + " " + (m.rule || "?") + " [" + normSev("yara", meta.severity) + " · " + (parseInt(meta.severity)||0) + "] ───\n";
-            if (meta.threat_name)   out += "  Threat:      " + meta.threat_name + "\n";
-            if (meta.description)   out += "  Description: " + meta.description + "\n";
-            if (meta.author)        out += "  Author:      " + meta.author + "\n";
-            if (meta.creation_date) out += "  Created:     " + meta.creation_date + "\n";
+            let sev = normSev("yara", meta.severity);
+            let col = sevColor(sev);
+            html += "<div style='border:1px solid " + col + "60;padding:8px;margin:6px 0;background:#1a1a1a;'>";
+            html += "<div style='font-size:10pt;'><b style='color:" + col + ";'>#" + (i+1) + " " +
+                    htmlEsc(m.rule || "?") + "</b> " + tagSev(sev) +
+                    " <span style='color:#888;font-size:9pt;'>(score " + (parseInt(meta.severity)||0) + ")</span></div>";
+            html += "<table style='margin-top:6px;'>";
+            if (meta.threat_name)   html += kvRowHtml("Threat",      meta.threat_name);
+            if (meta.description)   html += kvRowHtml("Description", meta.description);
+            if (meta.author)        html += kvRowHtml("Author",      meta.author);
+            if (meta.creation_date) html += kvRowHtml("Created",     meta.creation_date);
+            html += "</table>";
             let strs = asArr(m.strings);
             if (strs.length > 0) {
-                out += "  Strings (" + strs.length + "):\n";
+                html += "<div style='color:#888;font-size:10pt;margin-top:6px;'>String matches (" + strs.length + "):</div>";
+                html += "<div style='font-family:monospace;font-size:9pt;background:#0a0a0a;padding:6px;margin-top:4px;'>";
                 for (let j = 0; j < strs.length && j < 15; j++) {
                     let s = strs[j];
-                    out += "    " + (s.offset || "") + "  ";
-                    if (s.identifier) out += s.identifier + "  ";
-                    out += String(s.data || "").substring(0, 200) + "\n";
+                    html += "<div><span style='color:#888'>" + htmlEsc(s.offset || "") + "</span> ";
+                    if (s.identifier) html += "<span style='color:" + COL_INFO + "'>" + htmlEsc(s.identifier) + "</span> ";
+                    html += "<span style='color:#C0C0C0'>" + htmlEsc(String(s.data || "").substring(0, 200)) + "</span></div>";
                 }
-                if (strs.length > 15) out += "    ... +" + (strs.length - 15) + " more\n";
+                if (strs.length > 15) html += "<div style='color:#666'>... +" + (strs.length - 15) + " more</div>";
+                html += "</div>";
             }
-            out += "\n";
+            html += "</div>";
         }
     }
-    W.staticYara.body.setText(out);
+    W.staticYara.body.setText(html);
 }
 
 function renderStaticCheckplz(cp) {
@@ -1020,31 +1073,35 @@ function renderStaticCheckplz(cp) {
           severity: "info" },
     ]);
 
-    let out = "";
+    let html = "";
     if (isClean) {
-        out = "AV signature scan completed without matches.\n";
+        html = "<div style='color:" + COL_OK + ";font-size:10pt;padding:6px;'>✓ AV signature scan completed without matches.</div>";
     } else {
-        out = "── Trigger ──\n";
-        if (f.initial_threat)       out += "  Initial threat:    " + f.initial_threat + "\n";
-        if (scan.detection_offset)  out += "  Detection offset:  " + scan.detection_offset + "\n";
-        if (scan.relative_location) out += "  Relative location: " + scan.relative_location + "\n";
-        if (scan.final_threat_detection) out += "  Final detection:   " + scan.final_threat_detection + "\n";
-        if (scan.file_path) out += "  File path:         " + scan.file_path + "\n";
-        if (scan.file_size) out += "  File size:         " + scan.file_size + "\n";
+        html += sectionHeader("Trigger");
+        html += "<table>";
+        if (f.initial_threat)       html += kvRowHtml("Initial threat",     f.initial_threat);
+        if (scan.detection_offset)  html += kvRowHtml("Detection offset",   scan.detection_offset);
+        if (scan.relative_location) html += kvRowHtml("Relative location",  scan.relative_location);
+        if (scan.final_threat_detection) html += kvRowHtml("Final detection", scan.final_threat_detection);
+        if (scan.file_path) html += kvRowHtml("File path", scan.file_path);
+        if (scan.file_size) html += kvRowHtml("File size", scan.file_size);
+        html += "</table>";
 
         let inds = asArr(f.threat_indicators);
         if (inds.length > 0) {
-            out += "\n── Indicators (" + inds.length + ") ──\n";
+            html += sectionHeader("Indicators (" + inds.length + ")");
             for (let i = 0; i < inds.length; i++) {
-                out += "  • " + (inds[i].indicator || JSON.stringify(inds[i])) + "\n";
+                html += "<div style='color:#C0C0C0;font-family:monospace;font-size:10pt;padding:2px 0;'>• " +
+                        htmlEsc(inds[i].indicator || JSON.stringify(inds[i])) + "</div>";
             }
         }
         if (scan.hex_dump) {
-            out += "\n── Hex dump (around trigger) ──\n";
-            out += scan.hex_dump + "\n";
+            html += sectionHeader("Hex dump (around trigger)");
+            html += "<pre style='background:#0a0a0a;padding:8px;color:#A0A0A0;font-size:9pt;'>" +
+                    htmlEsc(scan.hex_dump) + "</pre>";
         }
     }
-    W.staticCheckplz.body.setText(out);
+    W.staticCheckplz.body.setText(html);
 }
 
 function renderStaticStringnalyzer(strn) {
@@ -1078,20 +1135,24 @@ function renderStaticStringnalyzer(strn) {
         { label: "Categories",    value: nonEmpty,             severity: nonEmpty > 0 ? "medium" : "clean" },
     ]);
 
-    let out = "";
+    let html = "";
     if (nonEmpty === 0) {
-        out = "No notable strings found.\n";
+        html = "<div style='color:" + COL_OK + ";font-size:10pt;padding:6px;'>✓ No notable strings found.</div>";
     } else {
         for (let i = 0; i < cats.length; i++) {
             let arr = asArr(cats[i][1]);
             if (arr.length === 0) continue;
-            out += "── " + cats[i][0] + " (" + arr.length + ") ──\n";
-            for (let j = 0; j < arr.length && j < 30; j++) out += "  " + arr[j] + "\n";
-            if (arr.length > 30) out += "  ... +" + (arr.length - 30) + " more\n";
-            out += "\n";
+            let col = sevColor(cats[i][2] === "critical" ? "CRITICAL" :
+                              cats[i][2] === "medium" ? "MEDIUM" : "INFO");
+            html += "<div style='font-size:10pt;font-weight:bold;color:" + col + ";margin-top:14px;margin-bottom:6px;'>" +
+                    htmlEsc(cats[i][0]) + " <span style='color:#888;font-weight:normal;font-size:9pt;'>(" + arr.length + ")</span></div>";
+            html += "<div style='font-family:monospace;font-size:10pt;color:#C0C0C0;background:#0a0a0a;padding:6px;'>";
+            for (let j = 0; j < arr.length && j < 30; j++) html += htmlEsc(arr[j]) + "<br>";
+            if (arr.length > 30) html += "<span style='color:#666'>... +" + (arr.length - 30) + " more</span>";
+            html += "</div>";
         }
     }
-    W.staticStringnalyzer.body.setText(out);
+    W.staticStringnalyzer.body.setText(html);
 }
 
 function renderDynamic(results) {
@@ -1120,20 +1181,28 @@ function renderDynYara(yara) {
         { label: "Max Severity",  value: isClean ? "—" : highSev,        severity: highSev > 50 ? "critical" : "info" },
     ]);
 
-    let out = "";
+    let html = "";
     if (isClean) {
-        out = "No YARA-mem rules matched.\n";
+        html = "<div style='color:" + COL_OK + ";font-size:10pt;padding:6px;'>✓ No YARA-mem rules matched.</div>";
     } else {
         for (let i = 0; i < matches.length; i++) {
             let m = matches[i];
             let meta = m.metadata || {};
-            out += "── #" + (i+1) + " " + (m.rule || "?") + " [" + normSev("yara", meta.severity) + "] ──\n";
-            if (meta.threat_name) out += "  Threat:      " + meta.threat_name + "\n";
-            if (meta.description) out += "  Description: " + meta.description + "\n";
-            out += "\n";
+            let sev = normSev("yara", meta.severity);
+            let col = sevColor(sev);
+            html += "<div style='border:1px solid " + col + "60;padding:8px;margin:6px 0;background:#1a1a1a;'>";
+            html += "<div style='font-size:10pt;'><b style='color:" + col + ";'>#" + (i+1) + " " +
+                    htmlEsc(m.rule || "?") + "</b> " + tagSev(sev) + "</div>";
+            if (meta.threat_name || meta.description) {
+                html += "<table style='margin-top:6px;'>";
+                if (meta.threat_name) html += kvRowHtml("Threat",      meta.threat_name);
+                if (meta.description) html += kvRowHtml("Description", meta.description);
+                html += "</table>";
+            }
+            html += "</div>";
         }
     }
-    W.dynYara.body.setText(out);
+    W.dynYara.body.setText(html);
 }
 
 function renderDynPesieve(ps) {
@@ -1146,28 +1215,40 @@ function renderDynPesieve(ps) {
         { label: "Modifications", value: f.total_suspicious || 0,        severity: isClean ? "clean" : "critical" },
     ]);
 
-    renderBreakdown(W.dynPesieve.stats, []);   // (no-op — breakdown lives below stats? keep stats simple)
-    // Render the indicator breakdown as a second-row label appended into body via text.
-
-    let out = "── Indicator breakdown ──\n";
     let breakdown = [
-        ["Hooked",            f.hooked],
-        ["Replaced",          f.replaced],
-        ["Headers Modified",  f.hdrs_modified],
-        ["IAT Hooks",         f.iat_hooks],
-        ["Implanted",         f.implanted],
-        ["Implanted PE",      f.implanted_pe],
-        ["Implanted shc",     f.implanted_shc],
-        ["Unreachable",       f.unreachable],
-        ["Other",             f.other],
+        { label: "Hooked",           value: f.hooked },
+        { label: "Replaced",         value: f.replaced },
+        { label: "Headers Modified", value: f.hdrs_modified },
+        { label: "IAT Hooks",        value: f.iat_hooks },
+        { label: "Implanted",        value: f.implanted },
+        { label: "Implanted PE",     value: f.implanted_pe },
+        { label: "Implanted shc",    value: f.implanted_shc },
+        { label: "Unreachable",      value: f.unreachable },
+        { label: "Other",            value: f.other },
     ];
-    for (let i = 0; i < breakdown.length; i++) {
-        let v = breakdown[i][1] || 0;
-        let mark = v > 0 ? " ⚠" : "";
-        out += "  " + breakdown[i][0].padEnd(20, " ") + ": " + v + mark + "\n";
+    let html = sectionHeader("Indicator breakdown");
+    html += "<table cellspacing='6' cellpadding='6' style='margin:4px 0;'>";
+    let perRow = 3;
+    for (let i = 0; i < breakdown.length; i += perRow) {
+        html += "<tr>";
+        for (let j = 0; j < perRow && (i + j) < breakdown.length; j++) {
+            let it = breakdown[i + j];
+            let v = it.value || 0;
+            let bdr = v > 0 ? COL_CRITICAL : "#444";
+            let valCol = v > 0 ? COL_CRITICAL : "#D0D0D0";
+            html += "<td style='border:1px solid " + bdr + ";padding:4px 8px;'>" +
+                    "<div style='color:#888;font-size:9pt;'>" + htmlEsc(it.label) + "</div>" +
+                    "<div style='color:" + valCol + ";font-family:monospace;font-size:11pt;font-weight:bold;'>" + v + "</div>" +
+                    "</td>";
+        }
+        html += "</tr>";
     }
-    if (f.raw_output) out += "\n── Raw output ──\n" + f.raw_output + "\n";
-    W.dynPesieve.body.setText(out);
+    html += "</table>";
+    if (f.raw_output) {
+        html += sectionHeader("Raw output");
+        html += "<pre style='background:#0a0a0a;padding:8px;color:#A0A0A0;font-size:9pt;'>" + htmlEsc(f.raw_output) + "</pre>";
+    }
+    W.dynPesieve.body.setText(html);
 }
 
 function renderDynMoneta(mn) {
@@ -1192,29 +1273,48 @@ function renderDynMoneta(mn) {
           severity: f.total_heap_executable > 0 ? "critical" : "info" },
     ]);
 
-    let out = "";
-    if (pi.name) out += "── Process ──\n  " + pi.name + " (PID " + pi.pid + ", " + (pi.arch || "?") + ")\n  " +
-                       (pi.path || "") + "\n  Scan duration: " + (f.scan_duration ? f.scan_duration.toFixed(2) + "s" : "—") + "\n\n";
-
-    out += "── Anomaly counts ──\n";
-    let cats = [
-        ["Private RWX",          f.total_private_rwx],
-        ["Private RX",           f.total_private_rx],
-        ["Modified Code",        f.total_modified_code],
-        ["Heap Executable",      f.total_heap_executable],
-        ["Modified PE Header",   f.total_modified_pe_header],
-        ["Inconsistent X",       f.total_inconsistent_x],
-        ["Missing PEB",          f.total_missing_peb],
-        ["Mismatching PEB",      f.total_mismatching_peb],
-        ["Unsigned Modules",     f.total_unsigned_modules],
-        ["Threads in non-image", f.total_threads_non_image],
-    ];
-    for (let i = 0; i < cats.length; i++) {
-        let v = cats[i][1] || 0;
-        let mark = v > 0 ? " ⚠" : "";
-        out += "  " + (cats[i][0] + ":").padEnd(24, " ") + " " + v + mark + "\n";
+    let html = "";
+    if (pi.name) {
+        html += sectionHeader("Process");
+        html += "<table>";
+        html += kvRowHtml("Name",      pi.name + " (PID " + pi.pid + ", " + (pi.arch || "?") + ")");
+        if (pi.path)        html += kvRowHtml("Path",          pi.path);
+        if (f.scan_duration) html += kvRowHtml("Scan duration", f.scan_duration.toFixed(2) + "s");
+        html += "</table>";
     }
-    W.dynMoneta.body.setText(out);
+
+    html += sectionHeader("Memory anomalies");
+    let cats = [
+        ["Private RWX",          f.total_private_rwx,          true],
+        ["Modified Code",        f.total_modified_code,        true],
+        ["Heap Executable",      f.total_heap_executable,      true],
+        ["Modified PE Header",   f.total_modified_pe_header,   true],
+        ["Threads in non-image", f.total_threads_non_image,    true],
+        ["Private RX",           f.total_private_rx,           false],
+        ["Inconsistent X",       f.total_inconsistent_x,       false],
+        ["Missing PEB",          f.total_missing_peb,          false],
+        ["Mismatching PEB",      f.total_mismatching_peb,      false],
+        ["Unsigned Modules",     f.total_unsigned_modules,     false],
+    ];
+    html += "<table cellspacing='6' cellpadding='6'>";
+    let perRow = 3;
+    for (let i = 0; i < cats.length; i += perRow) {
+        html += "<tr>";
+        for (let j = 0; j < perRow && (i + j) < cats.length; j++) {
+            let it = cats[i + j];
+            let v = it[1] || 0;
+            let isCrit = it[2];
+            let bdr = v > 0 ? (isCrit ? COL_CRITICAL : COL_MEDIUM) : "#444";
+            let valCol = v > 0 ? (isCrit ? COL_CRITICAL : COL_MEDIUM) : "#D0D0D0";
+            html += "<td style='border:1px solid " + bdr + ";padding:4px 8px;'>" +
+                    "<div style='color:#888;font-size:9pt;'>" + htmlEsc(it[0]) + "</div>" +
+                    "<div style='color:" + valCol + ";font-family:monospace;font-size:11pt;font-weight:bold;'>" + v + "</div>" +
+                    "</td>";
+        }
+        html += "</tr>";
+    }
+    html += "</table>";
+    W.dynMoneta.body.setText(html);
 }
 
 function renderDynPatriot(pt) {
@@ -1233,36 +1333,51 @@ function renderDynPatriot(pt) {
         { label: "Duration", value: sum.duration ? sum.duration.toFixed(2) + "s" : "—", severity: "info" },
     ]);
 
-    let out = "";
+    let html = "";
     if (proc.process_name) {
-        out += "── Process ──\n";
-        out += "  Name:      " + proc.process_name + " (PID " + proc.pid + ")\n";
-        out += "  Elevation: " + (proc.elevation_status || "?") + "\n";
-        out += "  Memory:    Private " + (mem.private_memory ?? "?") + " MB · Executable " + (mem.executable_memory ?? "?") + " MB\n\n";
+        html += sectionHeader("Process");
+        html += "<table>";
+        html += kvRowHtml("Name",      proc.process_name + " (PID " + proc.pid + ")");
+        html += kvRowHtml("Elevation", proc.elevation_status || "?");
+        html += kvRowHtml("Memory",    "Private " + (mem.private_memory != null ? mem.private_memory : "?") +
+                                       " MB · Executable " + (mem.executable_memory != null ? mem.executable_memory : "?") + " MB");
+        html += "</table>";
     }
 
     let byType = sum.findings_by_type || {};
     if (Object.keys(byType).length > 0) {
-        out += "── Findings by type ──\n";
-        for (let t in byType) out += "  " + t + ": " + byType[t] + "\n";
-        out += "\n";
+        html += sectionHeader("Findings by type");
+        html += "<table cellspacing='4' cellpadding='4'>";
+        for (let t in byType) {
+            html += "<tr><td style='color:" + COL_HIGH + ";padding:2px 16px 2px 0;'>" + htmlEsc(t) +
+                    "</td><td style='color:" + COL_HIGH + ";font-family:monospace;font-weight:bold;'>" + byType[t] + "</td></tr>";
+        }
+        html += "</table>";
     }
 
     if (isClean) {
-        out += "No behavioral indicators.\n";
+        html += "<div style='color:" + COL_OK + ";font-size:10pt;padding:6px;'>✓ No behavioral indicators.</div>";
     } else {
-        out += "── Findings (" + findings.length + ") ──\n";
+        html += sectionHeader("Findings (" + findings.length + ")");
         for (let i = 0; i < findings.length; i++) {
             let f = findings[i];
-            out += "─ #" + (f.finding_number || (i+1)) + " " + (f.type || "?") + " [" + (f.level || "?") + "] @ " + (f.timestamp || "") + "\n";
-            if (f.details) out += "  " + f.details + "\n";
+            let lvl = (f.level || "INFO").toUpperCase();
+            let col = sevColor(lvl);
+            html += "<div style='border:1px solid " + col + "60;padding:8px;margin:6px 0;background:#1a1a1a;'>";
+            html += "<div><b style='color:" + col + ";'>#" + (f.finding_number || (i+1)) + " " +
+                    htmlEsc(f.type || "?") + "</b> " + tagSev(lvl) +
+                    " <span style='color:#888;font-size:9pt;'>" + htmlEsc(f.timestamp || "") + "</span></div>";
+            if (f.details) html += "<div style='color:#C0C0C0;font-family:monospace;font-size:10pt;margin-top:4px;'>" +
+                                    htmlEsc(f.details) + "</div>";
             if (f.parsed_details) {
-                for (let k in f.parsed_details) out += "  " + k + ": " + f.parsed_details[k] + "\n";
+                html += "<table style='margin-top:6px;'>";
+                for (let k in f.parsed_details) html += kvRowHtml(k, f.parsed_details[k]);
+                html += "</table>";
             }
-            out += "\n";
+            html += "</div>";
         }
     }
-    W.dynPatriot.body.setText(out);
+    W.dynPatriot.body.setText(html);
 }
 
 function renderDynHsb(hsb) {
@@ -1281,14 +1396,14 @@ function renderDynHsb(hsb) {
         { label: "Duration", value: summary.duration ? summary.duration.toFixed(2) + "s" : "—", severity: "info" },
     ]);
 
-    let out = "";
+    let html = "";
     if (first) {
-        out += "── Process ──\n  " + first.process_name + " (PID " + first.pid + ")\n\n";
+        html += sectionHeader("Process");
+        html += "<table>" + kvRowHtml("Name", first.process_name + " (PID " + first.pid + ")") + "</table>";
     }
     if (!hasFindings) {
-        out += "No sleep-pattern indicators.\n";
+        html += "<div style='color:" + COL_OK + ";font-size:10pt;padding:6px;'>✓ No sleep-pattern indicators.</div>";
     } else {
-        // Group by thread
         let byThread = {};
         for (let i = 0; i < fnds.length; i++) {
             let tid = fnds[i].thread_id || "process";
@@ -1296,18 +1411,22 @@ function renderDynHsb(hsb) {
             byThread[tid].push(fnds[i]);
         }
         for (let tid in byThread) {
-            out += "── " + (tid === "process" ? "Process-wide" : "Thread " + tid) +
-                   " (" + byThread[tid].length + ") ──\n";
+            html += sectionHeader(tid === "process" ? "Process-wide (" + byThread[tid].length + ")"
+                                                    : "Thread " + tid + " (" + byThread[tid].length + ")");
             let arr = byThread[tid];
             for (let i = 0; i < arr.length; i++) {
                 let f = arr[i];
-                out += "  • [" + (f.severity || "?") + "] " + (f.type || "?") + "\n";
-                if (f.description) out += "      " + f.description + "\n";
+                let sev = normSev(null, f.severity);
+                let col = sevColor(sev);
+                html += "<div style='border-left:3px solid " + col + ";padding:6px 10px;margin:4px 0;background:#1a1a1a;'>";
+                html += "<div><b style='color:" + col + ";'>" + htmlEsc(f.type || "?") + "</b> " + tagSev(sev) + "</div>";
+                if (f.description) html += "<div style='color:#C0C0C0;font-size:10pt;margin-top:3px;'>" +
+                                            htmlEsc(f.description) + "</div>";
+                html += "</div>";
             }
-            out += "\n";
         }
     }
-    W.dynHsb.body.setText(out);
+    W.dynHsb.body.setText(html);
 }
 
 function renderDynRedEdr(re) {
@@ -1331,66 +1450,75 @@ function renderDynRedEdr(re) {
         { label: "Audit API",        value: api,                                    severity: api > 0 ? "medium" : "info" },
     ]);
 
-    let out = "";
+    let html = "";
     if (proc.pid) {
-        out += "── Process ──\n";
-        out += "  PID:         " + proc.pid + "\n";
-        if (proc.image_path) out += "  Image:       " + proc.image_path + "\n";
-        if (proc.commandline) out += "  Cmdline:     " + proc.commandline + "\n";
-        if (proc.parent_pid)  out += "  Parent PID:  " + proc.parent_pid + "\n";
-        out += "\n";
+        html += sectionHeader("Process");
+        html += "<table>";
+        html += kvRowHtml("PID", proc.pid);
+        if (proc.image_path)  html += kvRowHtml("Image",      proc.image_path);
+        if (proc.commandline) html += kvRowHtml("Cmdline",    proc.commandline);
+        if (proc.parent_pid)  html += kvRowHtml("Parent PID", proc.parent_pid);
+        html += "</table>";
     }
 
     if (threats > 0) {
-        out += "── ⚠ Defender threat verdicts (" + threats + ") ──\n";
+        html += sectionHeader("⚠ Defender threat verdicts (" + threats + ")");
         for (let i = 0; i < defs.length; i++) {
             if (defs[i].category !== "threat") continue;
-            out += "  • " + (defs[i].verdict || defs[i].event || "threat");
-            if (defs[i].scan_target) out += " — " + defs[i].scan_target;
-            if (defs[i].time) out += " [" + defs[i].time + "]";
-            out += "\n";
+            html += "<div style='border-left:3px solid " + COL_CRITICAL + ";padding:6px 10px;margin:4px 0;background:#1a1a1a;'>";
+            html += "<div style='color:" + COL_CRITICAL + ";font-weight:bold;font-size:10pt;'>" +
+                    htmlEsc(defs[i].verdict || defs[i].event || "threat") + "</div>";
+            if (defs[i].scan_target) html += "<div style='color:#C0C0C0;font-family:monospace;font-size:10pt;margin-top:3px;'>" +
+                                              htmlEsc(defs[i].scan_target) + "</div>";
+            if (defs[i].time) html += "<div style='color:#888;font-size:9pt;'>" + htmlEsc(defs[i].time) + "</div>";
+            html += "</div>";
         }
-        out += "\n";
     }
 
     let auditArr = asArr(f.audit_api_calls);
     if (auditArr.length > 0) {
-        out += "── Audit API calls (" + auditArr.length + ") ──\n";
+        html += sectionHeader("Audit API calls (" + auditArr.length + ")");
+        html += "<div style='font-family:monospace;font-size:10pt;background:#0a0a0a;padding:6px;'>";
         for (let i = 0; i < auditArr.length && i < 30; i++) {
             let a = auditArr[i];
-            out += "  " + (a.api || "?");
-            if (a.target_pid) out += " → pid " + a.target_pid;
-            if (a.return_code !== undefined) out += " (rc=" + a.return_code + ")";
-            out += "\n";
+            html += "<div><span style='color:" + COL_MEDIUM + ";'>" + htmlEsc(a.api || "?") + "</span>";
+            if (a.target_pid) html += " <span style='color:#C0C0C0'>→ pid " + a.target_pid + "</span>";
+            if (a.return_code !== undefined) html += " <span style='color:#888'>(rc=" + a.return_code + ")</span>";
+            html += "</div>";
         }
-        if (auditArr.length > 30) out += "  ... +" + (auditArr.length - 30) + " more\n";
-        out += "\n";
+        if (auditArr.length > 30) html += "<span style='color:#666'>... +" + (auditArr.length - 30) + " more</span>";
+        html += "</div>";
     }
 
     let netArr = asArr(f.network_activity);
     if (netArr.length > 0) {
-        out += "── Network activity (" + netArr.length + ") ──\n";
+        html += sectionHeader("Network activity (" + netArr.length + ")");
+        html += "<div style='font-family:monospace;font-size:10pt;background:#0a0a0a;padding:6px;'>";
         for (let i = 0; i < netArr.length && i < 30; i++) {
             let n = netArr[i];
-            out += "  " + (n.proto || "?").toUpperCase() + " " + (n.operation || "") + " " +
-                   ((n.local_addr || "") + ":" + (n.local_port || "")) + " → " +
-                   ((n.remote_addr || "") + ":" + (n.remote_port || "")) + "\n";
+            html += "<div><span style='color:" + COL_INFO + ";'>" + htmlEsc((n.proto || "?").toUpperCase()) + "</span> " +
+                    "<span style='color:#C0C0C0'>" + htmlEsc(n.operation || "") + "</span> " +
+                    "<span style='color:#888'>" + htmlEsc((n.local_addr || "") + ":" + (n.local_port || "")) + " → " +
+                    htmlEsc((n.remote_addr || "") + ":" + (n.remote_port || "")) + "</span></div>";
         }
-        if (netArr.length > 30) out += "  ... +" + (netArr.length - 30) + " more\n";
-        out += "\n";
+        if (netArr.length > 30) html += "<span style='color:#666'>... +" + (netArr.length - 30) + " more</span>";
+        html += "</div>";
     }
 
     let kidsArr = asArr(f.child_processes);
     if (kidsArr.length > 0) {
-        out += "── Child processes (" + kidsArr.length + ") ──\n";
+        html += sectionHeader("Child processes (" + kidsArr.length + ")");
+        html += "<div style='font-family:monospace;font-size:10pt;background:#0a0a0a;padding:6px;'>";
         for (let i = 0; i < kidsArr.length; i++) {
             let k = kidsArr[i];
-            out += "  PID " + k.pid + ": " + (k.image_name || "?") + "\n";
+            html += "<div><span style='color:" + COL_MEDIUM + ";'>PID " + k.pid + "</span>: " +
+                    "<span style='color:#C0C0C0'>" + htmlEsc(k.image_name || "?") + "</span></div>";
         }
+        html += "</div>";
     }
 
-    if (out === "") out = "No notable runtime telemetry.\n";
-    W.dynRedEdr.body.setText(out);
+    if (html === "") html = "<div style='color:" + COL_OK + ";font-size:10pt;padding:6px;'>✓ No notable runtime telemetry.</div>";
+    W.dynRedEdr.body.setText(html);
 }
 
 function renderEdrProfile(profile, data) {
