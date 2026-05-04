@@ -54,8 +54,10 @@ func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginSe
 
 func (p *PluginService) Call(operator string, function string, args string) {
 	switch function {
-	case "get_profiles":
-		go p.handleGetProfiles(operator)
+	case "get_health", "get_profiles":
+		// `get_health` is the new unified probe. `get_profiles` kept as an
+		// alias so older AXS scripts keep working while we transition.
+		go p.handleGetHealth(operator)
 	case "submit":
 		go p.handleSubmit(operator, args)
 	case "run_all":
@@ -88,6 +90,22 @@ func sendError(operator string, msg string) {
 
 func sendStatus(operator, kind, msg string) {
 	send(operator, map[string]string{"action": "status", "kind": kind, "message": msg})
+}
+
+// sendProgress streams per-scanner progress for the live progress rows.
+//   scanner: "static" / "dynamic" / "edr:<profile>"
+//   state:   "pending" / "uploading" / "running" / "phase1" / "polling" /
+//            "done" / "error" / "skipped"
+//   message: free-form one-liner ("Phase 2 polling — 3 alerts so far")
+//   count:   numeric badge (alerts so far / hits so far). 0 for none.
+func sendProgress(operator, scanner, state, message string, count int) {
+	send(operator, map[string]any{
+		"action":  "progress",
+		"scanner": scanner,
+		"state":   state,
+		"message": message,
+		"count":   count,
+	})
 }
 
 func lbGet(path string) ([]byte, int, error) {
@@ -133,22 +151,56 @@ func lbDelete(path string) ([]byte, int, error) {
 
 // ── handlers ─────────────────────────────────────────────────────────────────
 
-func (p *PluginService) handleGetProfiles(operator string) {
-	profBody, _, err := lbGet("/api/edr/profiles")
+func (p *PluginService) handleGetHealth(operator string) {
+	body, status, err := lbGet("/health")
 	if err != nil {
 		sendError(operator, "LitterBox unreachable: "+err.Error())
 		return
 	}
-	agentBody, _, _ := lbGet("/api/edr/agents/status")
+	// /health returns 200 when status==ok, 503 when degraded — both have
+	// usable bodies. Anything else is a real error.
+	if status != 200 && status != 503 {
+		sendError(operator, fmt.Sprintf("LitterBox /health HTTP %d: %s", status, string(body)))
+		return
+	}
 
-	var profiles, agents any
-	json.Unmarshal(profBody, &profiles)
-	json.Unmarshal(agentBody, &agents)
+	var health map[string]any
+	if err := json.Unmarshal(body, &health); err != nil {
+		sendError(operator, "LitterBox /health: cannot parse response")
+		return
+	}
+
+	// Backwards-compatible profiles list (older AXS expects {profiles:[...]}).
+	// Pulled from edr_agents.agents — same data, simpler shape.
+	var profiles []map[string]any
+	if edr, ok := health["edr_agents"].(map[string]any); ok {
+		if agents, ok := edr["agents"].([]any); ok {
+			for _, a := range agents {
+				m, ok := a.(map[string]any)
+				if !ok {
+					continue
+				}
+				profiles = append(profiles, map[string]any{
+					"name":         m["name"],
+					"display_name": m["display_name"],
+					"kind":         m["kind"],
+					"agent_url":    m["agent_url"],
+					"elastic_url":  m["elastic_url"],
+				})
+			}
+		}
+	}
 
 	send(operator, map[string]any{
-		"action":   "profiles",
-		"profiles": profiles,
-		"agents":   agents,
+		"action":   "health",
+		"status":   health["status"],
+		"issues":   health["issues"],
+		"sandbox":  health["sandbox"],
+		"scanners": health["scanners"],
+		// Mirror the older /api/edr/agents/status shape so the AXS
+		// renderProfiles helper keeps working.
+		"agents":   health["edr_agents"],
+		"profiles": map[string]any{"profiles": profiles},
 	})
 }
 
@@ -303,17 +355,17 @@ func (p *PluginService) handleRunEdr(operator string, args string) {
 // ── core analysis primitives ─────────────────────────────────────────────────
 
 func (p *PluginService) doStatic(operator, md5 string) {
-	sendStatus(operator, "static", "running")
+	sendProgress(operator, "static", "running", "Running YARA, CheckPlz, Stringnalyzer...", 0)
 
 	body, status, err := lbPostJSON("/analyze/static/"+md5, nil)
 	if err != nil {
+		sendProgress(operator, "static", "error", err.Error(), 0)
 		sendError(operator, "Static failed: "+err.Error())
-		sendStatus(operator, "static", "error")
 		return
 	}
 	if status != 200 {
+		sendProgress(operator, "static", "error", fmt.Sprintf("HTTP %d", status), 0)
 		sendError(operator, fmt.Sprintf("Static HTTP %d: %s", status, string(body)))
-		sendStatus(operator, "static", "error")
 		return
 	}
 
@@ -325,11 +377,11 @@ func (p *PluginService) doStatic(operator, md5 string) {
 		"md5":     md5,
 		"results": result["results"],
 	})
-	sendStatus(operator, "static", "done")
+	sendProgress(operator, "static", "done", "complete", 0)
 }
 
 func (p *PluginService) doDynamic(operator, md5 string, dynArgs []string) {
-	sendStatus(operator, "dynamic", "running")
+	sendProgress(operator, "dynamic", "running", "Executing payload on sandbox...", 0)
 
 	payload := map[string]any{}
 	if len(dynArgs) > 0 {
@@ -338,13 +390,13 @@ func (p *PluginService) doDynamic(operator, md5 string, dynArgs []string) {
 
 	body, status, err := lbPostJSON("/analyze/dynamic/"+md5, payload)
 	if err != nil {
+		sendProgress(operator, "dynamic", "error", err.Error(), 0)
 		sendError(operator, "Dynamic failed: "+err.Error())
-		sendStatus(operator, "dynamic", "error")
 		return
 	}
 	if status != 200 && status != 202 {
+		sendProgress(operator, "dynamic", "error", fmt.Sprintf("HTTP %d", status), 0)
 		sendError(operator, fmt.Sprintf("Dynamic HTTP %d: %s", status, string(body)))
-		sendStatus(operator, "dynamic", "error")
 		return
 	}
 
@@ -357,47 +409,44 @@ func (p *PluginService) doDynamic(operator, md5 string, dynArgs []string) {
 		"results":    result["results"],
 		"early_term": status == 202,
 	})
-	sendStatus(operator, "dynamic", "done")
+	if status == 202 {
+		sendProgress(operator, "dynamic", "done", "early termination", 0)
+	} else {
+		sendProgress(operator, "dynamic", "done", "complete", 0)
+	}
 }
 
 func (p *PluginService) doEdr(operator, md5, profile string) {
-	sendStatus(operator, "edr:"+profile, "phase1")
+	scanner := "edr:" + profile
+	sendProgress(operator, scanner, "phase1", "Dispatching payload to "+profile+"...", 0)
 
 	body, status, err := lbPostJSON("/analyze/edr/"+profile+"/"+md5, nil)
 	if err != nil {
+		sendProgress(operator, scanner, "error", err.Error(), 0)
 		send(operator, map[string]any{
-			"action":  "edr_error",
-			"profile": profile,
-			"message": err.Error(),
+			"action": "edr_error", "profile": profile, "message": err.Error(),
 		})
-		sendStatus(operator, "edr:"+profile, "error")
 		return
 	}
 	if status == 409 {
+		sendProgress(operator, scanner, "error", "agent busy", 0)
 		send(operator, map[string]any{
-			"action":  "edr_error",
-			"profile": profile,
-			"message": "agent busy",
+			"action": "edr_error", "profile": profile, "message": "agent busy",
 		})
-		sendStatus(operator, "edr:"+profile, "busy")
 		return
 	}
 	if status == 502 {
+		sendProgress(operator, scanner, "error", "agent unreachable", 0)
 		send(operator, map[string]any{
-			"action":  "edr_error",
-			"profile": profile,
-			"message": "agent unreachable",
+			"action": "edr_error", "profile": profile, "message": "agent unreachable",
 		})
-		sendStatus(operator, "edr:"+profile, "unreachable")
 		return
 	}
 	if status != 200 {
+		sendProgress(operator, scanner, "error", fmt.Sprintf("HTTP %d", status), 0)
 		send(operator, map[string]any{
-			"action":  "edr_error",
-			"profile": profile,
-			"message": fmt.Sprintf("HTTP %d", status),
+			"action": "edr_error", "profile": profile, "message": fmt.Sprintf("HTTP %d", status),
 		})
-		sendStatus(operator, "edr:"+profile, "error")
 		return
 	}
 
@@ -410,11 +459,19 @@ func (p *PluginService) doEdr(operator, md5, profile string) {
 		"profile": profile,
 		"data":    phase1,
 	})
-	sendStatus(operator, "edr:"+profile, "polling")
+	sendProgress(operator, scanner, "polling", "Phase 2 — polling for alerts...", 0)
 
-	// Phase 2: adaptive poll
+	// Phase 2: adaptive poll. 2s base, ×1.5 backoff up to 15s max when no
+	// alert-count movement, snap back to 2s on any movement. Hard cap is
+	// the profile's own correlation window plus a 30s grace.
 	interval := 2 * time.Second
-	deadline := time.Now().Add(300 * time.Second)
+	maxWait := 300 * time.Second
+	if sm, ok := phase1["summary"].(map[string]any); ok {
+		if w, ok := sm["wait_seconds_for_alerts"].(float64); ok && w > 0 {
+			maxWait = time.Duration(w+30) * time.Second
+		}
+	}
+	deadline := time.Now().Add(maxWait)
 	var lastTotal float64 = -1
 
 	for time.Now().Before(deadline) {
@@ -444,6 +501,8 @@ func (p *PluginService) doEdr(operator, md5, profile string) {
 				"profile": profile,
 				"data":    result,
 			})
+			sendProgress(operator, scanner, "polling",
+				fmt.Sprintf("Phase 2 — %d alert(s) so far", int(total)), int(total))
 			if total != lastTotal {
 				interval = 2 * time.Second
 				lastTotal = total
@@ -462,16 +521,15 @@ func (p *PluginService) doEdr(operator, md5, profile string) {
 			"profile": profile,
 			"data":    result,
 		})
-		sendStatus(operator, "edr:"+profile, "done")
+		sendProgress(operator, scanner, "done",
+			fmt.Sprintf("%s — %d alert(s)", edrStatus, int(total)), int(total))
 		return
 	}
 
+	sendProgress(operator, scanner, "error", "polling timed out", 0)
 	send(operator, map[string]any{
-		"action":  "edr_error",
-		"profile": profile,
-		"message": "polling timed out",
+		"action": "edr_error", "profile": profile, "message": "polling timed out",
 	})
-	sendStatus(operator, "edr:"+profile, "timeout")
 }
 
 func (p *PluginService) fetchRisk(operator, md5 string) {
